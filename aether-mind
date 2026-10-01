@@ -1,0 +1,72 @@
+import os
+from fastapi import FastAPI, HTTPException, Header
+from pydantic import BaseModel
+from typing import Optional
+import openai
+import anthropic
+import google.generativeai as genai
+
+app = FastAPI(title="Aether Mind Router API", version="1.0.0")
+
+# Inicialización de clientes usando variables de entorno
+anthropic_client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+openai.api_key = os.getenv("OPENAI_API_KEY")
+
+class ChatRequest(BaseModel):
+    user_id: str
+    prompt: str
+
+class ChatResponse(BaseModel):
+    routed_model: str
+    response_text: str
+
+def route_intent(prompt: str) -> str:
+    """Detecta la intención de la consulta para asignar el modelo óptimo."""
+    prompt_lower = prompt.lower()
+    code_keywords = ["code", "python", "javascript", "function", "bug", "script", "api", "react", "backend", "html", "css", "sql"]
+    doc_keywords = ["pdf", "summarize", "document", "analizar texto", "resumen", "contexto", "archivo"]
+    
+    if any(keyword in prompt_lower for keyword in code_keywords):
+        return "claude-latest-coding"
+    elif any(keyword in prompt_lower for keyword in doc_keywords):
+        return "gemini-pro-latest"
+    else:
+        return "gpt-flagship-latest"
+
+@app.post("/api/v1/chat", response_model=ChatResponse)
+async def process_chat(request: ChatRequest, authorization: Optional[str] = Header(None)):
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Token de autorización no proporcionado.")
+    
+    selected_model = route_intent(request.prompt)
+    output_text = ""
+
+    try:
+        if selected_model == "claude-latest-coding":
+            response = anthropic_client.messages.create(
+                model="claude-3-5-sonnet-latest",
+                max_tokens=4096,
+                messages=[{"role": "user", "content": request.prompt}]
+            )
+            output_text = response.content[0].text
+
+        elif selected_model == "gemini-pro-latest":
+            model = genai.GenerativeModel('gemini-1.5-pro-latest')
+            response = model.generate_content(request.prompt)
+            output_text = response.text
+
+        else: # gpt-flagship-latest
+            response = openai.ChatCompletion.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": "Eres Aether Mind, un asistente adaptativo y directo de alto rendimiento."},
+                    {"role": "user", "content": request.prompt}
+                ]
+            )
+            output_text = response.choices[0].message.content
+
+        return ChatResponse(routed_model=selected_model, response_text=output_text)
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error en la API de IA: {str(e)}")
